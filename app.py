@@ -88,16 +88,98 @@ def shorten():
 
 # 路由 3：跳转逻辑
 @app.route('/<short_code>')
+from flask import request, redirect # 确保开头导入了这些
+
+@app.route('/<short_code>')
 def jump(short_code):
     conn = sqlite3.connect('urls.db')
     c = conn.cursor()
     c.execute("SELECT long_url FROM mapping WHERE short_code=?", (short_code,))
     result = c.fetchone()
-    conn.close()
+    
     if result:
+        # 获取访客指纹
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        ua = request.user_agent
+        
+        # 存入访问日志
+        c.execute("INSERT INTO visit_logs (short_code, view_time, ip, browser, platform) VALUES (?, ?, ?, ?, ?)",
+                  (short_code, datetime.datetime.now(), ip, ua.browser, ua.platform))
+        conn.commit()
+        conn.close()
         return redirect(result[0])
-    return "该链接不存在", 404
+    
+    conn.close()
+    return "链接不存在", 404
 
+@app.route('/admin')
+d@app.route('/admin')
+def admin_panel():
+    conn = sqlite3.connect('urls.db')
+    c = conn.cursor()
+    # 统计数据
+    c.execute("SELECT COUNT(*) FROM visit_logs")
+    total_clicks = c.fetchone()[0]
+    c.execute("SELECT browser, COUNT(*) FROM visit_logs GROUP BY browser")
+    browser_data = c.fetchall()
+    conn.close()
+
+    # 准备饼图数据
+    labels = [row[0] if row[0] else "未知" for row in browser_data]
+    values = [row[1] for row in browser_data]
+
+    return f'''
+    <!DOCTYPE html>
+    <html style="background: #0f172a; color: white;">
+    <head>
+        <title>Sentinel 控制台</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{ font-family: sans-serif; padding: 20px; }}
+            .card {{ background: #1e293b; border-radius: 15px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
+            .stat-num {{ font-size: 48px; font-weight: bold; color: #38bdf8; }}
+        </style>
+    </head>
+    <body>
+        <h2>🛡️ Sentinel 哨兵系统 - 仪表盘</h2>
+        <div class="card">
+            <p>总访问请求</p>
+            <div class="stat-num">{total_clicks}</div>
+        </div>
+        <div class="card" style="max-width: 400px;">
+            <p>浏览器分布统计</p>
+            <canvas id="myChart"></canvas>
+        </div>
+        <script>
+            new Chart(document.getElementById('myChart'), {{
+                type: 'pie',
+                data: {{
+                    labels: {labels},
+                    datasets: [{{ data: {values}, backgroundColor: ['#38bdf8', '#fb7185', '#34d399', '#fbbf24'] }}]
+                }}
+            }});
+        </script>
+    </body>
+    </html>
+    '''
 if __name__ == '__main__':
-    init_db()
+   def init_db():
+    conn = sqlite3.connect('urls.db')
+    c = conn.cursor()
+    # 存储长短链接的表
+    c.execute('''CREATE TABLE IF NOT EXISTS mapping
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  long_url TEXT, 
+                  short_code TEXT UNIQUE)''')
+    # 新增：存储访问日志的表（实现截图里图表的数据源）
+    c.execute('''CREATE TABLE IF NOT EXISTS visit_logs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  short_code TEXT, 
+                  view_time TIMESTAMP, 
+                  ip TEXT, 
+                  browser TEXT,
+                  platform TEXT)''')
+    conn.commit()
+    conn.close()
     app.run(debug=True)
