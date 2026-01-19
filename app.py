@@ -1,183 +1,116 @@
 import os, sqlite3, random, string, datetime
-from flask import Flask, request, redirect, render_template_string, session, abort, jsonify
-from functools import wraps
+from flask import Flask, request, redirect, render_template_string, session
 
 app = Flask(__name__)
-app.secret_key = 'sentinel_master_key_2026'
+app.secret_key = 'sentinel_v1_secure'
 
-# --- 数据库底层架构 ---
+# --- 1. 数据库地基 ---
 def init_db():
     conn = sqlite3.connect('urls.db')
     c = conn.cursor()
-    # 账户体系
+    # 确保表结构完整：增加 policy_name 和 create_time
     c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, role TEXT, status TEXT)''')
-    # 链接体系 (含高级配置)
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT, role TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS mapping
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, long_url TEXT, short_code TEXT UNIQUE, owner TEXT, create_time TIMESTAMP)''')
-    # 哨兵拦截规则
-    c.execute('''CREATE TABLE IF NOT EXISTS rules
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, value TEXT, owner TEXT, note TEXT)''')
-    # 深度日志体系
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, long_url TEXT, short_code TEXT UNIQUE, owner TEXT, policy_name TEXT, create_time TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS visit_logs
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, short_code TEXT, view_time TIMESTAMP, 
-                  ip TEXT, browser TEXT, platform TEXT, status TEXT, referrer TEXT)''')
-    
-    # 初始化超级管理员 (默认: admin / 123456)
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, short_code TEXT, ip TEXT, view_time TEXT)''')
     try:
-        c.execute("INSERT INTO users (username, password, role, status) VALUES ('admin', '123456', 'admin', 'active')")
+        c.execute("INSERT INTO users (username, password, role) VALUES ('admin', '123456', 'admin')")
     except: pass
     conn.commit()
     conn.close()
 
-# --- 核心辅助函数 ---
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user' not in session: return redirect('/login')
-        return f(*args, **kwargs)
-    return decorated_function
-
-# --- UI 渲染模板 (模块化设计) ---
-BASE_HEAD = '''
+# --- 2. 视觉 UI (黑金风格) ---
+UI_STYLE = """
 <script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-    body { background-color: #020617; color: #f8fafc; font-family: 'Inter', sans-serif; }
-    .glass { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(51, 65, 85, 0.5); }
-    .accent-gradient { background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%); }
+    body { background-color: #0b0e14; color: #d1d5db; font-family: sans-serif; }
+    .sentinel-card { background: #151921; border: 1px solid #232936; border-radius: 12px; }
+    .accent-blue { color: #3b82f6; }
 </style>
-'''
+"""
 
-# --- 路由：身份验证 ---
+@app.route('/')
+def index():
+    if 'user' in session: return redirect('/admin')
+    return redirect('/login')
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        u, p = request.form['username'], request.form['password']
+        u, p = request.form['u'], request.form['p']
         conn = sqlite3.connect('urls.db'); c = conn.cursor()
         c.execute("SELECT role FROM users WHERE username=? AND password=?", (u, p))
         res = c.fetchone()
-        conn.close()
         if res:
-            session.permanent = True
-            session['user'], session['role'] = u, res[0]
+            session['user'] = u
             return redirect('/admin')
-        return "<script>alert('认证失败');window.history.back();</script>"
-    return f'''
-    {BASE_HEAD}
-    <body class="flex items-center justify-center min-h-screen">
-        <div class="glass p-10 rounded-3xl w-full max-w-sm shadow-2xl border-t-2 border-blue-500/30 text-center">
-            <div class="mb-8">
-                <h1 class="text-3xl font-black tracking-tighter text-white">SENTINEL<span class="text-blue-500">.</span></h1>
-                <p class="text-slate-500 text-sm mt-2 font-medium">高级链接监控与防御平台</p>
-            </div>
-            <form method="post" class="space-y-4 text-left">
-                <div>
-                    <label class="text-xs font-bold text-slate-400 ml-1">IDENTITY</label>
-                    <input name="username" class="w-full bg-slate-900/50 p-4 rounded-xl mt-1 border border-slate-800 focus:border-blue-500 transition-all outline-none" placeholder="Username">
-                </div>
-                <div>
-                    <label class="text-xs font-bold text-slate-400 ml-1">ACCESS KEY</label>
-                    <input name="password" type="password" class="w-full bg-slate-900/50 p-4 rounded-xl mt-1 border border-slate-800 focus:border-blue-500 transition-all outline-none" placeholder="Password">
-                </div>
-                <button class="w-full accent-gradient p-4 rounded-xl font-bold mt-4 hover:opacity-90 transition-all">SIGN IN</button>
+    return f"{UI_STYLE}<body class='flex items-center justify-center h-screen'><form method='post' class='sentinel-card p-10 w-96'><h1 class='text-2xl font-bold mb-8 text-center accent-blue'>SENTINEL LOGIN</h1><input name='u' placeholder='账户' class='w-full bg-slate-900 border border-slate-800 p-3 mb-4 rounded-lg outline-none'><input name='p' type='password' placeholder='密码' class='w-full bg-slate-900 border border-slate-800 p-3 mb-8 rounded-lg outline-none'><button class='bg-blue-600 w-full py-3 rounded-lg font-bold'>进入系统</button></form></body>"
+
+@app.route('/admin')
+def admin_panel():
+    if 'user' not in session: return redirect('/login')
+    conn = sqlite3.connect('urls.db'); c = conn.cursor()
+    c.execute("SELECT short_code, long_url, policy_name FROM mapping")
+    links = c.fetchall()
+    return render_template_string(f"""{UI_STYLE}
+    <body class='p-8'><div class='max-w-4xl mx-auto'>
+        <div class='flex justify-between mb-8'>
+            <h2 class='text-xl font-bold accent-blue'>哨兵控制台</h2>
+            <a href='/logout' class='text-red-400'>安全退出</a>
+        </div>
+        <div class='sentinel-card p-6 mb-8'>
+            <form action='/shorten' method='post' class='flex gap-2'>
+                <input name='long_url' placeholder='输入链接...' class='flex-1 bg-slate-900 border border-slate-800 p-2 rounded'>
+                <button class='bg-blue-600 px-6 rounded font-bold'>创建</button>
             </form>
         </div>
-    </body>
-    '''
-
-# --- 路由：控制台 (对标截图功能) ---
-@app.route('/admin')
-@login_required
-def admin_dashboard():
-    conn = sqlite3.connect('urls.db'); c = conn.cursor()
-    # 统计数据
-    c.execute("SELECT COUNT(*) FROM mapping WHERE owner=?", (session['user'],))
-    url_count = c.fetchone()[0]
-    c.execute("SELECT COUNT(*) FROM visit_logs WHERE short_code IN (SELECT short_code FROM mapping WHERE owner=?)", (session['user'],))
-    total_clicks = c.fetchone()[0]
-    c.execute("SELECT short_code, long_url, create_time FROM mapping WHERE owner=? ORDER BY id DESC", (session['user'],))
-    my_links = c.fetchall()
-    conn.close()
-
-    return render_template_string(f'''
-    {BASE_HEAD}
-    <body class="p-6">
-        <div class="max-w-6xl mx-auto">
-            <nav class="flex justify-between items-center mb-10">
-                <h2 class="text-xl font-black tracking-widest italic">SENTINEL PRO</h2>
-                <div class="flex items-center gap-6">
-                    <span class="text-xs text-slate-400">UID: {{session['user']}}</span>
-                    <a href="/rules" class="text-red-400 text-xs font-bold border border-red-500/30 px-3 py-1 rounded-full">哨兵拦截</a>
-                    {% if session['role'] == 'admin' %}
-                    <a href="/root" class="text-emerald-400 text-xs font-bold border border-emerald-500/30 px-3 py-1 rounded-full">多账户管理</a>
-                    {% endif %}
-                    <a href="/logout" class="text-slate-600 hover:text-white transition text-xs">EXIT</a>
-                </div>
-            </nav>
-
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div class="glass p-8 rounded-3xl lg:col-span-2">
-                    <h3 class="text-lg font-bold mb-6 flex items-center gap-2">
-                        <span class="w-2 h-2 rounded-full bg-blue-500"></span> 部署新链路
-                    </h3>
-                    <form action="/shorten" method="post" class="flex gap-4">
-                        <input name="long_url" placeholder="输入原始 URL..." class="flex-1 bg-slate-900/80 p-4 rounded-2xl border border-slate-800 outline-none" required>
-                        <button class="accent-gradient px-8 rounded-2xl font-bold">DEPLY</button>
-                    </form>
-                </div>
-                <div class="glass p-8 rounded-3xl flex flex-col justify-center text-center relative overflow-hidden">
-                    <div class="absolute -right-4 -top-4 w-24 h-24 bg-blue-500/10 rounded-full blur-3xl"></div>
-                    <p class="text-slate-400 text-xs font-bold uppercase tracking-widest">Global Clicks</p>
-                    <p class="text-6xl font-black mt-2 bg-gradient-to-b from-white to-slate-500 bg-clip-text text-transparent">{{total_clicks}}</p>
-                </div>
-            </div>
-
-            <div class="mt-10">
-                <div class="flex justify-between items-end mb-4 px-2">
-                    <h3 class="font-bold italic text-slate-400 uppercase text-xs">Active Sentinel Nodes</h3>
-                    <span class="text-xs text-slate-600">Total: {{url_count}}</span>
-                </div>
-                <div class="space-y-3">
-                    {% for link in my_links %}
-                    <div class="glass p-5 rounded-2xl flex justify-between items-center group hover:border-blue-500/50 transition-all">
-                        <div class="flex items-center gap-5">
-                            <div class="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center font-bold text-blue-500">/</div>
-                            <div>
-                                <p class="font-mono text-blue-400">{{request.host_url}}{{link[0]}}</p>
-                                <p class="text-[10px] text-slate-500 mt-1 truncate max-w-sm">{{link[1]}}</p>
-                            </div>
-                        </div>
-                        <div class="text-right">
-                            <p class="text-[10px] text-slate-600 uppercase font-bold">{{link[2]}}</p>
-                        </div>
-                    </div>
+        <div class='sentinel-card overflow-hidden'>
+            <table class='w-full text-left'>
+                <thead class='bg-slate-800'><tr><th class='p-4'>短链接</th><th class='p-4'>原始地址</th><th class='p-4'>策略</th></tr></thead>
+                <tbody>
+                    {% for link in links %}
+                    <tr class='border-t border-slate-800'>
+                        <td class='p-4 accent-blue'>{{request.host_url}}{{link[0]}}</td>
+                        <td class='p-4 text-slate-500'>{{link[1][:30]}}...</td>
+                        <td class='p-4 text-xs'>{{link[2]}}</td>
+                    </tr>
                     {% endfor %}
-                </div>
-            </div>
+                </tbody>
+            </table>
         </div>
-    </body>
-    ''', total_clicks=total_clicks, my_links=my_links, url_count=url_count)
-
-# --- 这里开始是拦截规则、跳转逻辑、多账户逻辑 (由于篇幅原因，逻辑与上一版保持一致，但在 UI 上进行了对标) ---
-# ... (中间逻辑参考上一版，已整合入此全量架构) ...
+    </div></body>""", links=links)
 
 @app.route('/shorten', methods=['POST'])
-@login_required
 def shorten():
     long_url = request.form['long_url']
-    short_code = ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(5))
-    create_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    code = ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(5))
+    t = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     conn = sqlite3.connect('urls.db'); c = conn.cursor()
-    c.execute("INSERT INTO mapping (long_url, short_code, owner, create_time) VALUES (?, ?, ?, ?)", 
-              (long_url, short_code, session['user'], create_time))
-    conn.commit(); conn.close()
+    # 修复了截图中的括号嵌套和逗号错误
+    c.execute("INSERT INTO mapping (long_url, short_code, owner, policy_name, create_time) VALUES (?, ?, ?, ?, ?)", 
+              (long_url, code, session.get('user'), '美股FB策略', t))
+    conn.commit()
+    conn.close()
     return redirect('/admin')
+
+@app.route('/<short_code>')
+def redirect_engine(short_code):
+    conn = sqlite3.connect('urls.db'); c = conn.cursor()
+    c.execute("SELECT long_url FROM mapping WHERE short_code=?", (short_code,))
+    res = c.fetchone()
+    if res:
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        c.execute("INSERT INTO visit_logs (short_code, ip, view_time) VALUES (?, ?, ?)", 
+                  (short_code, ip, str(datetime.datetime.now())))
+        conn.commit(); conn.close()
+        return redirect(res[0])
+    return "Link Not Found", 404
 
 @app.route('/logout')
 def logout():
-    session.clear()
-    return redirect('/login')
+    session.clear(); return redirect('/login')
 
 if __name__ == '__main__':
     init_db()
