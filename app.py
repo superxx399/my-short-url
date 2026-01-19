@@ -1,3 +1,4 @@
+import os       # <--- 第一步：在这里添加
 import sqlite3
 import random
 import string
@@ -8,11 +9,13 @@ app = Flask(__name__)
 
 # 数据库初始化：确保两张表都存在
 def init_db():
-    conn = sqlite3.connect('urls.db')
+    # 第二步：在此处插入这两行，强制删除旧的坏数据库
+    if os.path.exists('urls.db'):
+        os.remove('urls.db')
+        
+    conn = sqlite3.connect('urls.db') # 这是你原来的第 11 行
     c = conn.cursor()
-    # 1. 链接映射表
-    c.execute('''CREATE TABLE IF NOT EXISTS mapping
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+    # ... 后面保持不变 ...
                   long_url TEXT, 
                   short_code TEXT UNIQUE)''')
     # 2. 访问日志表
