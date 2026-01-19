@@ -1,9 +1,9 @@
 import sqlite3
-from flask import Flask, request, redirect, render_template_string
+from flask import Flask, request, redirect, render_template, render_template_string
 import random, string
 import datetime
-app = Flask(__name__)
 
+app = Flask(__name__)
 def init_db():
     conn = sqlite3.connect('urls.db')
     c = conn.cursor()
@@ -21,12 +21,12 @@ def init_db():
                   browser TEXT,
                   platform TEXT)''')
     conn.commit()
-    conn.commit()
+    
     conn.close()
 
 def generate_short_code():
     return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(4))
-    return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(4))
+  
 
 # 路由 1：首页
 @app.route('/')
