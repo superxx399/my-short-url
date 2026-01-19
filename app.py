@@ -6,6 +6,8 @@ app.secret_key = 'sentinel_pro_fix_2026'
 
 # --- 1. 数据库初始化 ---
 def init_db():
+    if os.path.exists('urls.db'):
+        os.remove('urls.db')
     conn = sqlite3.connect('urls.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS users 
