@@ -9,16 +9,20 @@ app = Flask(__name__)
 
 # 数据库初始化：确保两张表都存在
 def init_db():
-    # 第二步：在此处插入这两行，强制删除旧的坏数据库
+    # 1. 暴力重置逻辑（仅需执行一次即可修复 500 错误）
     if os.path.exists('urls.db'):
         os.remove('urls.db')
         
-    conn = sqlite3.connect('urls.db') # 这是你原来的第 11 行
+    conn = sqlite3.connect('urls.db')
     c = conn.cursor()
-    # ... 后面保持不变 ...
+    
+    # 2. 完整的地基 - 创建链接映射表
+    c.execute('''CREATE TABLE IF NOT EXISTS mapping
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   long_url TEXT, 
                   short_code TEXT UNIQUE)''')
-    # 2. 访问日志表
+                  
+    # 3. 完整的地基 - 创建访问日志表
     c.execute('''CREATE TABLE IF NOT EXISTS visit_logs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   short_code TEXT, 
@@ -26,6 +30,7 @@ def init_db():
                   ip TEXT, 
                   browser TEXT,
                   platform TEXT)''')
+                  
     conn.commit()
     conn.close()
 
