@@ -46,16 +46,22 @@ def index():
 
 # 路由 2：生成结果页
 @app.route('/shorten', methods=['POST'])
+@app.route('/shorten', methods=['POST'])
 def shorten():
     long_url = request.form.get('long_url')
     short_code = generate_short_code()
     
     conn = sqlite3.connect('urls.db')
     c = conn.cursor()
-    c.execute("INSERT INTO mapping VALUES (?, ?)", (short_code, long_url))
+    # 注意：确保你的表名是 mapping 还是 urls，根据你 89 行看应该是 mapping
+    c.execute("INSERT INTO mapping (long_url, short_code) VALUES (?, ?)", (long_url, short_code))
     conn.commit()
     conn.close()
-    
+
+    # 这里的逻辑会自动判断是在本地还是云端
+    base_url = request.host_url.replace('http://', 'https://') if 'onrender.com' in request.host_url else request.host_url
+    full_short_url = base_url + short_code
+
     return f'''
     <!DOCTYPE html>
     <html>
@@ -63,23 +69,22 @@ def shorten():
         <title>生成成功</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-            body {{ font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background-color: #f5f5f7; }}
-            .card {{ background: white; padding: 2.5rem; border-radius: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.05); width: 100%; max-width: 400px; text-align: center; }}
-            .icon {{ font-size: 48px; margin-bottom: 1rem; }}
-            .short-url {{ background: #f2f2f7; padding: 15px; border-radius: 12px; font-size: 18px; font-weight: 600; color: #007aff; margin: 20px 0; word-break: break-all; }}
-            .back-btn {{ color: #8e8e93; text-decoration: none; font-size: 14px; }}
+            body {{ font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f0f2f5; }}
+            .card {{ background: white; padding: 2rem; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.05); width: 320px; text-align: center; }}
+            .result {{ background: #e7f3ff; padding: 15px; border-radius: 10px; word-break: break-all; margin: 20px 0; color: #007aff; font-weight: bold; }}
+            a {{ color: #8e8e93; text-decoration: none; font-size: 14px; }}
         </style>
     </head>
     <body>
         <div class="card">
-            <div class="icon">✅</div>
+            <div style="font-size: 48px;">✅</div>
             <h2>生成成功</h2>
-            <div class="short-url">http://127.0.0.1:5000/{{short_code}}</div>
-            <a href="/" class="back-btn">← 返回首页</a>
+            <div class="result">{full_short_url}</div>
+            <a href="/">返回首页</a>
         </div>
-   </body>
+    </body>
     </html>
-    '''.replace('{{short_code}}', short_code)
+    '''
 
 # 路由 3：跳转逻辑
 @app.route('/<short_code>')
