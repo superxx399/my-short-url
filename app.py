@@ -77,7 +77,7 @@ def shorten():
             <div class="short-url">http://127.0.0.1:5000/{{short_code}}</div>
             <a href="/" class="back-btn">← 返回首页</a>
         </div>
-    </body>
+   </body>
     </html>
     '''.replace('{{short_code}}', short_code)
 
