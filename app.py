@@ -1,18 +1,28 @@
 import sqlite3
 from flask import Flask, request, redirect, render_template_string
 import random, string
-
+import datetime
 app = Flask(__name__)
 
 # 初始化数据库
 def init_db():
     conn = sqlite3.connect('urls.db')
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS mapping 
-                 (short_code TEXT PRIMARY KEY, long_url TEXT)''')
+    # 创建链接映射表
+    c.execute('''CREATE TABLE IF NOT EXISTS mapping
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  long_url TEXT, 
+                  short_code TEXT UNIQUE)''')
+    # 创建访问日志表（必须有这张表，仪表盘才能工作）
+    c.execute('''CREATE TABLE IF NOT EXISTS visit_logs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  short_code TEXT, 
+                  view_time TIMESTAMP, 
+                  ip TEXT, 
+                  browser TEXT,
+                  platform TEXT)''')
     conn.commit()
     conn.close()
-
 def generate_short_code():
     return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(4))
 
