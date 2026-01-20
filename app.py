@@ -133,6 +133,9 @@ def logout():
     session.clear()
     return redirect('/login')
 
+# 核心修复：确保在任何环境下启动都会初始化数据库
+init_db() 
+
 if __name__ == '__main__':
-    init_db()
+    # 这里的 init_db() 可以保留也可以删掉，因为上面已经跑过了
     app.run(debug=True)
