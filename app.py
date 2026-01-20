@@ -1,214 +1,195 @@
-import os, sqlite3, random, string, datetime, urllib.parse
+import os, sqlite3, random, string, datetime
 from flask import Flask, request, redirect, render_template_string, session, abort
 
 app = Flask(__name__)
-app.secret_key = "sentinel_no_login_bypass"
-DB_PATH = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'sentinel_v5.db')
+app.secret_key = "sentinel_minimalist_pro"
+DB_PATH = os.path.join(os.getcwd(), 'sentinel_v7.db')
 
 # --- 1. 数据库初始化 ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, role TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS mapping
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT, title TEXT, long_url TEXT, short_code TEXT UNIQUE, 
-                  welcome_msg TEXT, allowed_regions TEXT, allowed_devices TEXT, create_time TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS visit_logs
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, short_code TEXT, ip TEXT, region TEXT, ua TEXT, 
-                  is_blocked INTEGER, block_reason TEXT, view_time TEXT)''')
-    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES ('admin', 'admin888', 'admin')")
+    # 账户表
+    c.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, note TEXT)')
+    # 短链汇总表 (增加工单分配字段)
+    c.execute('''CREATE TABLE IF NOT EXISTS mapping (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, create_date TEXT, short_code TEXT UNIQUE, 
+                 target_url TEXT, worker_id TEXT, title TEXT)''')
+    # 访问日志表
+    c.execute('''CREATE TABLE IF NOT EXISTS logs (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT, code TEXT, ip TEXT, 
+                 referer TEXT, status TEXT, reason TEXT)''')
+    # 默认管理员
+    c.execute("INSERT OR IGNORE INTO users (username, password, note) VALUES ('admin', 'admin888', 'ROOT')")
     conn.commit(); conn.close()
 
-# --- 2. 管理后台 (已取消身份验证) ---
-@app.route('/')
-@app.route('/admin')
-def admin_panel():
-    # 临时强制身份为管理员，直接展示所有内容
-    current_user = "Internal_Tester"
-    current_role = "admin"
-    
-    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-    c.execute("SELECT * FROM mapping ORDER BY id DESC")
-    links = c.fetchall()
-    c.execute("SELECT username, role FROM users")
-    users = c.fetchall()
-    conn.close()
-    
-    return render_template_string(ADMIN_UI, links=links, users=users, role=current_role, user=current_user, host=request.host_url)
-
-# --- 3. 核心拦截引擎 (带拦截详情日志) ---
+# --- 2. 核心拦截转发逻辑 ---
 @app.route('/<short_code>')
-def dispatch(short_code):
-    reserved = ['admin', 'create_user', 'create_link', 'delete', 'logs', 'update', 'favicon.ico']
+def redirect_engine(short_code):
+    reserved = ['admin', 'create_user', 'create_link', 'logs', 'static']
     if short_code in reserved: return abort(404)
     
     conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-    c.execute("SELECT * FROM mapping WHERE short_code=?", (short_code,))
-    node = c.fetchone()
+    c.execute("SELECT target_url, title FROM mapping WHERE short_code=?", (short_code,))
+    res = c.fetchone()
     
-    if not node: return "ERROR: NODE_OFFLINE", 404
-
-    target_url, welcome_msg, allowed_devices = node[3], node[5], (node[7] or "")
     ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0]
-    ua_raw = request.user_agent.string
+    now = datetime.datetime.now().strftime("%m-%d %H:%M")
     
-    is_blocked = 0
-    block_reason = "Passed"
-    is_mobile = any(x in ua_raw.lower() for x in ['iphone', 'android', 'mobile'])
-    current_device = "Mobile" if is_mobile else "PC"
-    
-    # 这里的规则检查：如果后台勾选了限制，且当前设备不在勾选范围内，则拦截
-    if allowed_devices and current_device not in allowed_devices:
-        is_blocked = 1
-        block_reason = f"设备拦截: 目标仅限 {allowed_devices}, 您当前为 {current_device}"
+    if not res:
+        c.execute("INSERT INTO logs (time, code, ip, referer, status, reason) VALUES (?,?,?,?,?,?)",
+                  (now, short_code, ip, request.referrer, "失败", "短链不存在"))
+        conn.commit(); conn.close()
+        return "404 Not Found", 404
 
-    # WhatsApp 话术合成
-    final_url = target_url
-    if is_blocked == 0 and welcome_msg and ("wa.me" in target_url or "api.whatsapp.com" in target_url):
-        msg_encoded = urllib.parse.quote(welcome_msg)
-        final_url = f"{target_url}{'&' if '?' in target_url else '?'}text={msg_encoded}"
-
-    # 详尽日志审计
-    c.execute("INSERT INTO visit_logs (short_code, ip, ua, is_blocked, block_reason, view_time) VALUES (?, ?, ?, ?, ?, ?)",
-              (short_code, ip, ua_raw, is_blocked, block_reason, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    # 这里可以根据你的需求添加“设备/国家”拦截逻辑，如果通过则：
+    c.execute("INSERT INTO logs (time, code, ip, referer, status, reason) VALUES (?,?,?,?,?,?)",
+              (now, short_code, ip, request.referrer, "成功", "已放行"))
     conn.commit(); conn.close()
+    return redirect(res[0])
 
-    if is_blocked:
-        return f"<body style='background:#050505;color:#ff4d4d;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;'><div><h1 style='border-bottom:2px solid #ff4d4d;padding-bottom:10px;'>SECURITY SHIELD</h1><p>{block_reason}</p></div></body>", 403
+# --- 3. 极简管理后台 ---
+@app.route('/admin')
+def admin():
+    tab = request.args.get('tab', 'links') # 默认显示短链汇总
+    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
     
-    return redirect(final_url)
+    data = {}
+    if tab == 'users':
+        c.execute("SELECT * FROM users")
+        data['users'] = c.fetchall()
+    elif tab == 'links':
+        c.execute("SELECT * FROM mapping ORDER BY id DESC")
+        data['links'] = c.fetchall()
+    elif tab == 'logs':
+        c.execute("SELECT * FROM logs ORDER BY id DESC LIMIT 100")
+        data['logs'] = c.fetchall()
+    
+    conn.close()
+    return render_template_string(BASE_UI, tab=tab, data=data)
 
-# --- 4. 功能路由 ---
+# --- 4. 功能接口 ---
 @app.route('/create_user', methods=['POST'])
 def create_user():
-    u, p = request.form.get('u'), request.form.get('p')
+    u, p, n = request.form['u'], request.form['p'], request.form['n']
     conn = sqlite3.connect(DB_PATH); c = conn.cursor()
     try:
-        c.execute("INSERT INTO users (username, password, role) VALUES (?, ?, 'agent')", (u, p))
+        c.execute("INSERT INTO users (username, password, note) VALUES (?,?,?)", (u, p, n))
         conn.commit()
     except: pass
     finally: conn.close()
-    return redirect('/admin')
+    return redirect('/admin?tab=users')
 
 @app.route('/create_link', methods=['POST'])
 def create_link():
-    f = request.form
-    code = f.get('code').strip() or ''.join(random.choice(string.ascii_letters) for _ in range(6))
-    devices = ",".join(f.getlist('devices'))
+    t, u, w, n = request.form['t'], request.form['u'], request.form['w'], request.form['n']
+    code = ''.join(random.choice(string.ascii_letters) for _ in range(5))
     conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-    c.execute("INSERT INTO mapping (owner, title, long_url, short_code, welcome_msg, allowed_regions, allowed_devices, create_time) VALUES (?,?,?,?,?,?,?,?)",
-              ("Internal_Tester", f['title'], f['url'], code, f['msg'], f['regions'], devices, datetime.datetime.now().strftime("%Y-%m-%d %H:%M")))
+    c.execute("INSERT INTO mapping (create_date, short_code, target_url, worker_id, title) VALUES (?,?,?,?,?)",
+              (datetime.datetime.now().strftime("%Y-%m-%d"), code, u, w, n))
     conn.commit(); conn.close()
-    return redirect('/admin')
+    return redirect('/admin?tab=links')
 
-@app.route('/logs/<code>')
-def view_logs(code):
-    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-    c.execute("SELECT * FROM visit_logs WHERE short_code=? ORDER BY id DESC LIMIT 100", (code,))
-    logs = c.fetchall(); conn.close()
-    return render_template_string(LOGS_UI, logs=logs, code=code)
-
-@app.route('/delete/<code>')
-def delete_link(code):
-    conn = sqlite3.connect(DB_PATH); c = conn.cursor()
-    c.execute("DELETE FROM mapping WHERE short_code=?", (code,))
-    conn.commit(); conn.close()
-    return redirect('/admin')
-
-# --- 5. UI (样式保持 V5 暗黑专业版) ---
-ADMIN_UI = """
+# --- 5. 极致简洁 UI 模板 ---
+BASE_UI = """
 <script src="https://cdn.tailwindcss.com"></script>
-<body class="bg-[#0b0e14] text-slate-300 p-8">
-    <div class="max-w-7xl mx-auto">
-        <div class="mb-10 flex justify-between items-center">
-            <div>
-                <h1 class="text-3xl font-black text-blue-500 italic underline tracking-tighter">SENTINEL BYPASS MODE</h1>
-                <p class="text-[10px] text-red-500 font-bold uppercase mt-1 tracking-[0.3em]">内测模式：身份验证已跳过 | 数据保存功能正常</p>
+<body class="bg-[#0f1117] text-slate-300 flex h-screen overflow-hidden font-sans">
+    <nav class="w-64 bg-[#161922] border-r border-white/5 flex flex-col p-6">
+        <h1 class="text-blue-500 font-black italic text-xl mb-10 tracking-tighter">SENTINEL CENTER</h1>
+        <div class="space-y-2 flex-1">
+            <a href="?tab=users" class="flex items-center gap-3 p-3 rounded-xl transition {{ 'bg-blue-600 text-white' if tab=='users' else 'hover:bg-white/5' }}">
+                <span class="text-sm font-bold">👤 创建账户</span>
+            </a>
+            <a href="?tab=links" class="flex items-center gap-3 p-3 rounded-xl transition {{ 'bg-blue-600 text-white' if tab=='links' else 'hover:bg-white/5' }}">
+                <span class="text-sm font-bold">🔗 短链汇总</span>
+            </a>
+            <a href="?tab=logs" class="flex items-center gap-3 p-3 rounded-xl transition {{ 'bg-blue-600 text-white' if tab=='logs' else 'hover:bg-white/5' }}">
+                <span class="text-sm font-bold">📊 访问日志</span>
+            </a>
+        </div>
+        <div class="text-[10px] text-slate-600 border-t border-white/5 pt-4 uppercase">System Version 7.0</div>
+    </nav>
+
+    <main class="flex-1 overflow-y-auto p-10 bg-[#0f1117]">
+        {% if tab == 'users' %}
+        <section class="max-w-2xl">
+            <h2 class="text-xl font-bold mb-6">创建新账户</h2>
+            <form action="/create_user" method="post" class="space-y-4 bg-[#161922] p-8 rounded-3xl border border-white/5">
+                <input name="u" placeholder="账户名 (ID)" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl outline-none focus:border-blue-500 text-sm">
+                <input name="p" type="password" placeholder="访问密码" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl outline-none focus:border-blue-500 text-sm">
+                <input name="n" placeholder="备注 (如：东南亚组)" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl outline-none focus:border-blue-500 text-sm">
+                <button class="bg-blue-600 w-full py-3 rounded-xl font-bold text-white shadow-lg">确认创建账户</button>
+            </form>
+        </section>
+
+        {% elif tab == 'links' %}
+        <section>
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-bold">短链汇总控制台</h2>
+                <button onclick="document.getElementById('linkModal').showModal()" class="bg-blue-600 px-4 py-2 rounded-xl text-xs font-bold text-white">+ 新增短链</button>
             </div>
-            <div class="text-xs bg-slate-800 px-4 py-2 rounded-xl text-slate-500 border border-white/5">DB: sentinel_v5.db</div>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-10">
-            <div class="bg-[#11141b] p-6 rounded-3xl border border-white/5 shadow-2xl">
-                <h3 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 italic">子账户多开</h3>
-                <form action="/create_user" method="post" class="space-y-3">
-                    <input name="u" placeholder="账户名" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs outline-none focus:border-blue-500">
-                    <input name="p" placeholder="初始密码" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs outline-none focus:border-blue-500">
-                    <button class="w-full bg-blue-600 py-3 rounded-xl text-xs font-bold text-white shadow-lg">确认开号</button>
-                </form>
+            <div class="bg-[#161922] rounded-3xl border border-white/5 overflow-hidden">
+                <table class="w-full text-left text-xs">
+                    <thead class="bg-white/5 text-slate-500 uppercase">
+                        <tr><th class="p-5">日期</th><th class="p-5">备注名称</th><th class="p-5">短链入口</th><th class="p-5">工单分配</th><th class="p-5 text-right">操作</th></tr>
+                    </thead>
+                    <tbody class="divide-y divide-white/5">
+                        {% for l in data.links %}
+                        <tr class="hover:bg-white/5 transition">
+                            <td class="p-5">{{ l[1] }}</td>
+                            <td class="p-5 font-bold">{{ l[5] }}</td>
+                            <td class="p-5 text-blue-400">/{{ l[2] }}</td>
+                            <td class="p-5 font-mono text-slate-500">{{ l[4] or '未分配' }}</td>
+                            <td class="p-5 text-right space-x-3">
+                                <a href="/{{ l[2] }}" target="_blank" class="text-green-500 hover:underline">测试</a>
+                                <button class="text-blue-500">编辑</button>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
+        </section>
 
-            <div class="bg-[#11141b] p-6 rounded-3xl border border-white/5 shadow-2xl lg:col-span-2">
-                <h3 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4 italic text-blue-500">部署链路指挥节点</h3>
-                <form action="/create_link" method="post" class="grid grid-cols-2 gap-4">
-                    <input name="title" placeholder="链路备注" class="bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs outline-none focus:border-blue-500" required>
-                    <input name="code" placeholder="指定后缀 (如: test01)" class="bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs outline-none focus:border-blue-500">
-                    <input name="url" placeholder="目的地 (WhatsApp/群链接)" class="bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs outline-none focus:border-blue-500 col-span-2" required>
-                    <input name="msg" placeholder="自动进线语 (文字)" class="bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs outline-none focus:border-blue-500 col-span-2">
-                    <input name="regions" placeholder="拦截地区代码 (CN,HK)" class="bg-slate-900 border border-slate-800 p-3 rounded-xl text-xs outline-none focus:border-blue-500">
-                    <div class="flex items-center gap-6 px-4 text-xs">
-                        <label class="flex items-center gap-2"><input type="checkbox" name="devices" value="Mobile" checked> 手机端</label>
-                        <label class="flex items-center gap-2"><input type="checkbox" name="devices" value="PC" checked> 电脑端</label>
-                    </div>
-                    <button class="bg-blue-600 py-3 rounded-xl text-xs font-bold text-white col-span-2 shadow-lg shadow-blue-900/40">确认部署</button>
-                </form>
+        {% elif tab == 'logs' %}
+        <section>
+            <h2 class="text-xl font-bold mb-6">实时访问与拦截审计</h2>
+            <div class="bg-[#161922] rounded-3xl border border-white/5 overflow-hidden">
+                <table class="w-full text-left text-[10px] md:text-xs">
+                    <thead class="bg-white/5 text-slate-500 uppercase">
+                        <tr><th class="p-5">访问时间</th><th class="p-5">短链</th><th class="p-5">状态</th><th class="p-5">拦截原因</th><th class="p-5">访问来路</th></tr>
+                    </thead>
+                    <tbody class="divide-y divide-white/5">
+                        {% for log in data.logs %}
+                        <tr class="{{ 'bg-red-500/5' if log[5]=='失败' else '' }}">
+                            <td class="p-5 text-slate-500">{{ log[1] }}</td>
+                            <td class="p-5 font-bold">/{{ log[2] }}</td>
+                            <td class="p-5">
+                                <span class="{{ 'text-red-500' if log[5]=='失败' else 'text-green-500' }} font-bold">{{ log[5] }}</span>
+                            </td>
+                            <td class="p-5 italic text-slate-500">{{ log[6] }}</td>
+                            <td class="p-5 text-slate-600 truncate max-w-[150px]">{{ log[4] or '直接访问' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
-        </div>
+        </section>
+        {% endif %}
+    </main>
 
-        <div class="bg-[#11141b] rounded-[2.5rem] border border-white/5 overflow-hidden shadow-2xl">
-            <table class="w-full text-left text-sm">
-                <thead class="bg-white/5 text-slate-500 text-[10px] uppercase tracking-widest">
-                    <tr><th class="p-6">链路信息</th><th class="p-6">固定入口</th><th class="p-6">拦截规则</th><th class="p-6 text-right">监控</th></tr>
-                </thead>
-                <tbody class="divide-y divide-white/5">
-                    {% for link in links %}
-                    <tr class="hover:bg-blue-500/5 transition group">
-                        <td class="p-6 font-bold text-slate-200">{{ link[2] }}</td>
-                        <td class="p-6 font-mono text-blue-400">/{{ link[4] }}</td>
-                        <td class="p-6">
-                            <span class="text-[10px] bg-slate-900 border border-white/5 px-3 py-1 rounded-full text-slate-400 italic">
-                                {{ link[7] or '无限制' }}
-                            </span>
-                        </td>
-                        <td class="p-6 text-right flex justify-end gap-3">
-                            <a href="/logs/{{ link[4] }}" class="bg-blue-600/10 text-blue-500 border border-blue-500/20 px-4 py-2 rounded-xl text-[10px] font-bold hover:bg-blue-600 hover:text-white transition">穿透详情日志</a>
-                            <a href="/delete/{{ link[4] }}" class="text-slate-800 hover:text-red-500 text-[10px] py-2">销毁</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</body>
-"""
-
-LOGS_UI = """
-<script src="https://cdn.tailwindcss.com"></script>
-<body class="bg-[#0b0e14] text-slate-300 p-8">
-    <div class="max-w-6xl mx-auto">
-        <div class="flex justify-between items-center mb-8">
-            <h2 class="text-xl font-bold italic underline text-blue-500">穿透审计: /{{ code }}</h2>
-            <a href="/admin" class="text-xs bg-slate-800 px-4 py-2 rounded-xl">返回面板</a>
-        </div>
-        <div class="bg-[#11141b] rounded-3xl border border-white/5 overflow-hidden shadow-2xl">
-            <table class="w-full text-xs text-left">
-                <thead class="bg-white/5 text-slate-500 uppercase tracking-tighter">
-                    <tr><th class="p-5">访问时间</th><th class="p-5">IP 来源</th><th class="p-5">处理状态</th><th class="p-5">详细原因/指纹</th></tr>
-                </thead>
-                <tbody class="divide-y divide-white/5">
-                    {% for log in logs %}
-                    <tr class="{{ 'bg-red-500/5' if log[5] == 1 else 'bg-green-500/5' }}">
-                        <td class="p-5 text-slate-500">{{ log[7] }}</td>
-                        <td class="p-5 font-mono text-blue-400 font-bold underline">{{ log[2] }}</td>
-                        <td class="p-5 font-black">{{ '❌ BLOCKED' if log[5] == 1 else '✅ PASSED' }}</td>
-                        <td class="p-5 text-slate-500 italic">{{ log[6] if log[5] == 1 else log[4][:100] }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
+    <dialog id="linkModal" class="bg-[#161922] p-8 rounded-[2rem] border border-white/10 text-slate-300 w-96 backdrop:bg-black/80">
+        <form action="/create_link" method="post" class="space-y-4">
+            <h3 class="font-bold text-lg mb-4">部署新短链</h3>
+            <input name="n" placeholder="备注名称" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl outline-none text-sm">
+            <input name="u" placeholder="目标 URL" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl outline-none text-sm">
+            <input name="w" placeholder="工单分配 ID" class="w-full bg-slate-900 border border-slate-800 p-3 rounded-xl outline-none text-sm">
+            <div class="flex gap-3">
+                <button type="button" onclick="this.closest('dialog').close()" class="flex-1 py-3 text-slate-500">取消</button>
+                <button class="flex-1 bg-blue-600 py-3 rounded-xl font-bold text-white">确认</button>
+            </div>
+        </form>
+    </dialog>
 </body>
 """
 
