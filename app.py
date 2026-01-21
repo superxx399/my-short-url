@@ -196,5 +196,7 @@ def login():
     return '<body style="background:#f1f5f9;display:flex;justify-content:center;align-items:center;height:100vh;"><form method="post" style="background:#fff;padding:50px;border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,0.1);width:350px;"><h2>SENTINEL LOGIN</h2><input name="u" placeholder="Account" style="width:100%;margin-bottom:10px;padding:10px;"><input name="p" type="password" placeholder="Password" style="width:100%;margin-bottom:20px;padding:10px;"><button style="width:100%;background:#2563eb;color:#fff;padding:10px;border-radius:8px;">LOGIN</button></form></body>'
 
 if __name__ == '__main__':
+    # 临时增加这一行，强制重置云端旧数据库
+    if os.path.exists(DB_PATH): os.remove(DB_PATH) 
     init_db()
     app.run(host='0.0.0.0', port=8888)
